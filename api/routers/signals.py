@@ -1,4 +1,4 @@
-import re
+import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -10,12 +10,13 @@ from api.signals_engine import mask_signal
 
 router = APIRouter(tags=["signals"])
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
 
 def _validate_date(value: Optional[str], param: str) -> None:
-    if value and not _DATE_RE.match(value):
-        raise HTTPException(status_code=400, detail=f"{param} must be YYYY-MM-DD")
+    if value:
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"{param} must be YYYY-MM-DD")
 
 
 @router.get("/signals-ms/signals", response_model=SignalsResponse)

@@ -20,18 +20,13 @@ from api.models import EntitlementBlock
 
 logger = logging.getLogger("pulse-trading-signals-service")
 
-_redis_client = None
-
 
 def _get_redis():
-    global _redis_client
-    if _redis_client is None:
-        import redis.asyncio as aioredis
+    from api.scheduler import (
+        redis_client,
+    )  # imported lazily to avoid circular import at module load
 
-        from api.config import REDIS_URL
-
-        _redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
-    return _redis_client
+    return redis_client
 
 
 class Identity(NamedTuple):
@@ -126,17 +121,16 @@ async def get_user_claims_async(request: Request) -> Identity:
     return await _resolve_identity_from_auth_service(auth[7:])
 
 
+_ANON = Identity(
+    user_id="anonymous", tier="free", is_admin=False, signals_remaining=0, token=""
+)
+
+
 def get_user_claims(request: Request) -> Identity:
     """Sync fallback for SSE path — does not resolve tier from auth service."""
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
-        return Identity(
-            user_id="anonymous",
-            tier="free",
-            is_admin=False,
-            signals_remaining=0,
-            token="",
-        )
+        return _ANON
     try:
         payload = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return Identity(
@@ -147,13 +141,7 @@ def get_user_claims(request: Request) -> Identity:
             token=auth[7:],
         )
     except Exception:
-        return Identity(
-            user_id="anonymous",
-            tier="free",
-            is_admin=False,
-            signals_remaining=0,
-            token="",
-        )
+        return _ANON
 
 
 async def enforce_quota(identity: Identity, log_view: bool = False) -> EntitlementBlock:
@@ -161,9 +149,7 @@ async def enforce_quota(identity: Identity, log_view: bool = False) -> Entitleme
     if identity.tier == "pro" or identity.is_admin:
         return EntitlementBlock(tier="pro", remaining_views=999999, locked=False)
 
-    remaining = (
-        identity.signals_remaining if identity.signals_remaining is not None else 0
-    )
+    remaining = identity.signals_remaining or 0
     locked = remaining <= 0
 
     if not locked and log_view:

@@ -1,4 +1,4 @@
-import re
+import string
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
@@ -7,7 +7,7 @@ from api.scheduler import redis_client, scheduler
 
 router = APIRouter(tags=["analyze"])
 
-_TICKER_RE = re.compile(r"^[A-Z0-9\-]{1,10}$")
+_TICKER_CHARS = set(string.ascii_uppercase + string.digits + "-")
 _COOLDOWN_SECONDS = 300  # one analysis per ticker per user per 5 minutes
 
 
@@ -23,7 +23,7 @@ async def analyze_on_demand(
         raise HTTPException(status_code=403, detail="Pro required")
 
     ticker_upper = ticker.strip().upper()
-    if not _TICKER_RE.match(ticker_upper):
+    if not (1 <= len(ticker_upper) <= 10 and set(ticker_upper) <= _TICKER_CHARS):
         raise HTTPException(status_code=400, detail="Invalid ticker format")
 
     asset_type = asset_type.strip().lower()
