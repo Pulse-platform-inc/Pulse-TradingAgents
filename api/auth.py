@@ -113,6 +113,10 @@ def enforce_quota(user_id: str, tier: str, log_view: bool = False) -> Entitlemen
 
     conn = get_db_connection()
     try:
+        # BEGIN IMMEDIATE holds a write lock across check+insert so concurrent
+        # requests can't both read count < limit and both slip through.
+        conn.execute("BEGIN IMMEDIATE")
+
         count = conn.execute(
             "SELECT COUNT(*) as cnt FROM user_quota_logs WHERE user_id = ? AND viewed_at >= ?",
             (user_id, window_start.strftime("%Y-%m-%d %H:%M:%S")),
@@ -137,10 +141,10 @@ def enforce_quota(user_id: str, tier: str, log_view: bool = False) -> Entitlemen
                 "INSERT INTO user_quota_logs (user_id, viewed_at) VALUES (?, ?)",
                 (user_id, now.strftime("%Y-%m-%d %H:%M:%S")),
             )
-            conn.commit()
             count += 1
             locked = count >= limit
 
+        conn.commit()
         return EntitlementBlock(
             tier="free",
             remaining_views=max(0, limit - count),
@@ -148,5 +152,8 @@ def enforce_quota(user_id: str, tier: str, log_view: bool = False) -> Entitlemen
             locked=locked,
             cooldown_ends_at=reset_at if locked else None,
         )
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

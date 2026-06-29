@@ -8,6 +8,11 @@ DB_PATH = os.getenv(
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+
+_raw_origins = os.getenv(
+    "PULSE_CORS_ORIGINS", "https://pulsenow.io,https://staging.pulsenow.io"
+)
+CORS_ORIGINS: list[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 JWT_SECRET = os.getenv("PULSE_JWT_SECRET", os.getenv("JWT_SECRET", "pulse-secret-key"))
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "https://staging-backend.pulsenow.io")

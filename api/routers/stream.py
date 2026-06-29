@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from api.auth import _resolve_identity_from_auth_service, enforce_quota
@@ -17,16 +17,10 @@ router = APIRouter(tags=["stream"])
 async def sse_stream(
     request: Request,
     authorization: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
 ):
-    jwt_token = None
-    if authorization and authorization.startswith("Bearer "):
-        jwt_token = authorization[7:]
-    elif token:
-        jwt_token = token
-
-    if not jwt_token:
-        raise HTTPException(status_code=401, detail="Authentication token required")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    jwt_token = authorization[7:]
 
     user_id, tier = await _resolve_identity_from_auth_service(jwt_token)
     entitlement = enforce_quota(user_id, tier, log_view=False)
