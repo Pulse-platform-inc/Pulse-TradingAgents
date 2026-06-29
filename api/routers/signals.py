@@ -1,13 +1,21 @@
+import re
 from typing import Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from api.auth import enforce_quota, get_user_claims_async
-from api.database import get_db_connection, _row_to_signal
+from api.database import _row_to_signal, get_db_connection
 from api.models import SignalsResponse
 from api.signals_engine import mask_signal
 
 router = APIRouter(tags=["signals"])
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_date(value: Optional[str], param: str) -> None:
+    if value and not _DATE_RE.match(value):
+        raise HTTPException(status_code=400, detail=f"{param} must be YYYY-MM-DD")
 
 
 @router.get("/signals-ms/signals", response_model=SignalsResponse)
@@ -20,8 +28,11 @@ async def get_signals_feed(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
+    _validate_date(start_date, "start_date")
+    _validate_date(end_date, "end_date")
+
     identity = await get_user_claims_async(request)
-    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=True)
+    entitlement = await enforce_quota(identity, log_view=True)
 
     parts = ["SELECT * FROM trading_signals WHERE 1=1"]
     params: list = []
@@ -57,7 +68,7 @@ async def get_signals_feed(
 @router.get("/signals-ms/signals/latest", response_model=SignalsResponse)
 async def get_latest_signals(request: Request):
     identity = await get_user_claims_async(request)
-    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=True)
+    entitlement = await enforce_quota(identity, log_view=True)
 
     conn = get_db_connection()
     try:

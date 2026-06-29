@@ -12,7 +12,7 @@ router = APIRouter(tags=["tickers"])
 @router.get("/signals-ms/tickers", response_model=TickersResponse)
 async def get_tracked_tickers(request: Request):
     identity = await get_user_claims_async(request)
-    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=False)
+    entitlement = await enforce_quota(identity, log_view=False)
 
     conn = get_db_connection()
     try:

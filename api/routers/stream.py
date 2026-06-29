@@ -23,7 +23,7 @@ async def sse_stream(
     jwt_token = authorization[7:]
 
     identity = await _resolve_identity_from_auth_service(jwt_token)
-    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=False)
+    entitlement = await enforce_quota(identity, log_view=False)
 
     if entitlement.locked:
 
@@ -52,21 +52,12 @@ async def sse_stream(
                         signal = json.loads(msg["data"])
 
                         if identity.tier == "free":
-                            current = enforce_quota(
-                                identity.user_id, identity.tier, log_view=False
-                            )
+                            # Increment first — auth service is the authority
+                            current = await enforce_quota(identity, log_view=True)
                             if current.locked:
                                 yield f"event: quota_exhausted\ndata: {json.dumps({'locked': True})}\n\n"
                                 break
-                            yield f"event: signal\ndata: {json.dumps(signal)}\n\n"
-                            current = enforce_quota(
-                                identity.user_id, identity.tier, log_view=True
-                            )
-                            if current.locked:
-                                yield f"event: quota_exhausted\ndata: {json.dumps({'locked': True})}\n\n"
-                                break
-                        else:
-                            yield f"event: signal\ndata: {json.dumps(signal)}\n\n"
+                        yield f"event: signal\ndata: {json.dumps(signal)}\n\n"
                     else:
                         if time.time() - last_heartbeat > 20:
                             yield "event: heartbeat\ndata: ping\n\n"

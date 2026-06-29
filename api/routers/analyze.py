@@ -3,11 +3,12 @@ import re
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 from api.auth import get_user_claims_async
-from api.scheduler import scheduler
+from api.scheduler import redis_client, scheduler
 
 router = APIRouter(tags=["analyze"])
 
 _TICKER_RE = re.compile(r"^[A-Z0-9\-]{1,10}$")
+_COOLDOWN_SECONDS = 300  # one analysis per ticker per user per 5 minutes
 
 
 @router.post("/signals-ms/analyze")
@@ -30,6 +31,20 @@ async def analyze_on_demand(
         raise HTTPException(
             status_code=400, detail="asset_type must be 'stocks' or 'crypto'"
         )
+
+    cooldown_key = f"analyze_cd:{identity.user_id}:{ticker_upper}"
+    try:
+        if await redis_client.exists(cooldown_key):
+            ttl = await redis_client.ttl(cooldown_key)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Analysis already queued for {ticker_upper}. Retry in {ttl}s.",
+            )
+        await redis_client.setex(cooldown_key, _COOLDOWN_SECONDS, "1")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Redis unavailable — allow through rather than block
 
     background_tasks.add_task(
         scheduler.execute_agent_run, ticker_upper, asset_type, None

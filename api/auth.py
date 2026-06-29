@@ -4,7 +4,7 @@ import json
 import logging
 import urllib.error as _ue
 import urllib.request as _ur
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import jwt
 from fastapi import HTTPException, Request
@@ -16,7 +16,6 @@ from api.config import (
     JWT_ALGORITHM,
     JWT_SECRET,
 )
-from api.database import get_db_connection
 from api.models import EntitlementBlock
 
 logger = logging.getLogger("pulse-trading-signals-service")
@@ -28,6 +27,7 @@ def _get_redis():
     global _redis_client
     if _redis_client is None:
         import redis.asyncio as aioredis
+
         from api.config import REDIS_URL
 
         _redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
@@ -38,6 +38,8 @@ class Identity(NamedTuple):
     user_id: str
     tier: str  # "free" | "pro"
     is_admin: bool
+    signals_remaining: Optional[int]  # None = unlimited (Pro)
+    token: str  # raw JWT — never persisted to Redis
 
 
 async def _resolve_identity_from_auth_service(token: str) -> Identity:
@@ -50,14 +52,25 @@ async def _resolve_identity_from_auth_service(token: str) -> Identity:
             user_id=str(payload.get("sub") or "dev-user"),
             tier=DEV_BYPASS_AUTH,
             is_admin=False,
+            signals_remaining=FREE_TIER_QUOTA_LIMIT
+            if DEV_BYPASS_AUTH == "free"
+            else None,
+            token=token,
         )
 
     cache_key = f"identity:{hashlib.sha256(token.encode()).hexdigest()}"
     try:
         cached = await _get_redis().get(cache_key)
         if cached:
-            user_id, tier, admin_flag = cached.split(":", 2)
-            return Identity(user_id=user_id, tier=tier, is_admin=admin_flag == "1")
+            user_id, tier, admin_flag, sig_rem = cached.split(":", 3)
+            signals_remaining = None if sig_rem == "" else int(sig_rem)
+            return Identity(
+                user_id=user_id,
+                tier=tier,
+                is_admin=admin_flag == "1",
+                signals_remaining=signals_remaining,
+                token=token,  # always from the live request, never from cache
+            )
     except Exception:
         pass
 
@@ -70,6 +83,7 @@ async def _resolve_identity_from_auth_service(token: str) -> Identity:
             data = json.loads(resp.read())
         tier = "pro" if data.get("is_pro") else "free"
         is_admin = bool(data.get("is_admin", False))
+        signals_remaining = data.get("signals_remaining_today")  # None = unlimited
     except _ue.HTTPError as e:
         if e.code == 401:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -89,11 +103,20 @@ async def _resolve_identity_from_auth_service(token: str) -> Identity:
 
     try:
         admin_flag = "1" if is_admin else "0"
-        await _get_redis().setex(cache_key, 60, f"{user_id}:{tier}:{admin_flag}")
+        sig_rem_str = "" if signals_remaining is None else str(signals_remaining)
+        await _get_redis().setex(
+            cache_key, 60, f"{user_id}:{tier}:{admin_flag}:{sig_rem_str}"
+        )
     except Exception:
         pass
 
-    return Identity(user_id=user_id, tier=tier, is_admin=is_admin)
+    return Identity(
+        user_id=user_id,
+        tier=tier,
+        is_admin=is_admin,
+        signals_remaining=signals_remaining,
+        token=token,
+    )
 
 
 async def get_user_claims_async(request: Request) -> Identity:
@@ -107,69 +130,80 @@ def get_user_claims(request: Request) -> Identity:
     """Sync fallback for SSE path — does not resolve tier from auth service."""
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
-        return Identity(user_id="anonymous", tier="free", is_admin=False)
+        return Identity(
+            user_id="anonymous",
+            tier="free",
+            is_admin=False,
+            signals_remaining=0,
+            token="",
+        )
     try:
         payload = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return Identity(
             user_id=str(payload.get("sub") or "anonymous"),
             tier="free",
             is_admin=False,
+            signals_remaining=FREE_TIER_QUOTA_LIMIT,
+            token=auth[7:],
         )
     except Exception:
-        return Identity(user_id="anonymous", tier="free", is_admin=False)
+        return Identity(
+            user_id="anonymous",
+            tier="free",
+            is_admin=False,
+            signals_remaining=0,
+            token="",
+        )
 
 
-def enforce_quota(user_id: str, tier: str, log_view: bool = False) -> EntitlementBlock:
-    if tier == "pro":
+async def enforce_quota(identity: Identity, log_view: bool = False) -> EntitlementBlock:
+    """Check and optionally increment quota via the auth service counter."""
+    if identity.tier == "pro" or identity.is_admin:
         return EntitlementBlock(tier="pro", remaining_views=999999, locked=False)
 
-    limit = FREE_TIER_QUOTA_LIMIT
-    now = datetime.datetime.now()
-    window_start = now - datetime.timedelta(hours=24)
+    remaining = (
+        identity.signals_remaining if identity.signals_remaining is not None else 0
+    )
+    locked = remaining <= 0
 
-    conn = get_db_connection()
-    try:
-        # BEGIN IMMEDIATE holds a write lock across check+insert so concurrent
-        # requests can't both read count < limit and both slip through.
-        conn.execute("BEGIN IMMEDIATE")
-
-        count = conn.execute(
-            "SELECT COUNT(*) as cnt FROM user_quota_logs WHERE user_id = ? AND viewed_at >= ?",
-            (user_id, window_start.strftime("%Y-%m-%d %H:%M:%S")),
-        ).fetchone()["cnt"]
-
-        oldest = conn.execute(
-            "SELECT viewed_at FROM user_quota_logs WHERE user_id = ? AND viewed_at >= ? ORDER BY viewed_at ASC LIMIT 1",
-            (user_id, window_start.strftime("%Y-%m-%d %H:%M:%S")),
-        ).fetchone()
-
-        reset_at = None
-        if oldest:
-            oldest_time = datetime.datetime.strptime(
-                oldest["viewed_at"], "%Y-%m-%d %H:%M:%S"
+    if not locked and log_view:
+        try:
+            req = _ur.Request(
+                f"{AUTH_SERVICE_URL}/auth-ms/me/usage/signals",
+                data=b"",  # POST with empty body
+                headers={"Authorization": f"Bearer {identity.token}"},
             )
-            reset_at = oldest_time + datetime.timedelta(hours=24)
+            with _ur.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            remaining = data["remaining"] if data.get("remaining") is not None else 0
+            locked = bool(data.get("quota_exhausted", remaining <= 0))
+        except _ue.HTTPError as e:
+            if e.code == 429:
+                locked = True
+                remaining = 0
+            else:
+                # Auth service error — fall back to local decrement rather than
+                # silently allowing unlimited access
+                logger.warning(
+                    "Auth service usage call failed (%s) — falling back", e.code
+                )
+                remaining = max(0, remaining - 1)
+                locked = remaining <= 0
+        except Exception as e:
+            logger.warning("Auth service usage call failed: %s — falling back", e)
+            remaining = max(0, remaining - 1)
+            locked = remaining <= 0
 
-        locked = count >= limit
+    # Reset is end-of-day UTC (matching auth service's daily window)
+    now_utc = datetime.datetime.utcnow()
+    reset_at = (now_utc + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
 
-        if not locked and log_view:
-            conn.execute(
-                "INSERT INTO user_quota_logs (user_id, viewed_at) VALUES (?, ?)",
-                (user_id, now.strftime("%Y-%m-%d %H:%M:%S")),
-            )
-            count += 1
-            locked = count >= limit
-
-        conn.commit()
-        return EntitlementBlock(
-            tier="free",
-            remaining_views=max(0, limit - count),
-            reset_at=reset_at,
-            locked=locked,
-            cooldown_ends_at=reset_at if locked else None,
-        )
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    return EntitlementBlock(
+        tier="free",
+        remaining_views=max(0, remaining),
+        reset_at=reset_at if locked else None,
+        locked=locked,
+        cooldown_ends_at=reset_at if locked else None,
+    )
