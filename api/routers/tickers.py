@@ -1,12 +1,18 @@
 import datetime
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from api.auth import enforce_quota, get_user_claims_async
+from api.config import INTERNAL_API_KEY
 from api.database import get_db_connection
 from api.models import TickerStats, TickersResponse, WatchlistAddPayload
 
 router = APIRouter(tags=["tickers"])
+
+
+def _require_internal_key(x_internal_api_key: str = Header(...)) -> None:
+    if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 @router.get("/signals-ms/tickers", response_model=TickersResponse)
@@ -49,10 +55,11 @@ async def get_tracked_tickers(request: Request):
 
 
 @router.post("/signals-ms/tickers", status_code=201)
-async def add_watchlist_ticker(payload: WatchlistAddPayload, request: Request):
-    _, tier = await get_user_claims_async(request)
-    if tier != "pro":
-        raise HTTPException(status_code=403, detail="Admin/Pro required")
+def add_watchlist_ticker(
+    payload: WatchlistAddPayload,
+    x_internal_api_key: str = Header(...),
+):
+    _require_internal_key(x_internal_api_key)
     ticker = payload.ticker.strip().upper()
     asset_type = payload.asset_type.strip().lower()
     if asset_type not in ("stocks", "crypto"):
@@ -74,10 +81,11 @@ async def add_watchlist_ticker(payload: WatchlistAddPayload, request: Request):
 
 
 @router.delete("/signals-ms/tickers/{ticker}")
-async def delete_watchlist_ticker(ticker: str, request: Request):
-    _, tier = await get_user_claims_async(request)
-    if tier != "pro":
-        raise HTTPException(status_code=403, detail="Admin/Pro required")
+def delete_watchlist_ticker(
+    ticker: str,
+    x_internal_api_key: str = Header(...),
+):
+    _require_internal_key(x_internal_api_key)
     ticker = ticker.strip().upper()
     conn = get_db_connection()
     try:

@@ -17,6 +17,7 @@ JWT_SECRET = os.getenv("PULSE_JWT_SECRET", os.getenv("JWT_SECRET", "pulse-secret
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "https://staging-backend.pulsenow.io")
 FREE_TIER_QUOTA_LIMIT = int(os.getenv("FREE_TIER_QUOTA_LIMIT", "3"))
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 START_TIME = datetime.datetime.now()
 
 # ponytail: local-only bypass — requires APP_ENV=development or service refuses to start
