@@ -4,6 +4,7 @@ import json
 import logging
 import urllib.error as _ue
 import urllib.request as _ur
+from typing import NamedTuple
 
 import jwt
 from fastapi import HTTPException, Request
@@ -20,7 +21,6 @@ from api.models import EntitlementBlock
 
 logger = logging.getLogger("pulse-trading-signals-service")
 
-# Lazy import to avoid circular import at module level
 _redis_client = None
 
 
@@ -34,20 +34,30 @@ def _get_redis():
     return _redis_client
 
 
-async def _resolve_identity_from_auth_service(token: str) -> tuple[str, str]:
+class Identity(NamedTuple):
+    user_id: str
+    tier: str  # "free" | "pro"
+    is_admin: bool
+
+
+async def _resolve_identity_from_auth_service(token: str) -> Identity:
     if DEV_BYPASS_AUTH in ("pro", "free"):
         logger.warning(
             "DEV_BYPASS_AUTH active — skipping auth service (development only)"
         )
         payload = jwt.decode(token, options={"verify_signature": False})
-        return str(payload.get("sub") or "dev-user"), DEV_BYPASS_AUTH
+        return Identity(
+            user_id=str(payload.get("sub") or "dev-user"),
+            tier=DEV_BYPASS_AUTH,
+            is_admin=False,
+        )
 
     cache_key = f"identity:{hashlib.sha256(token.encode()).hexdigest()}"
     try:
         cached = await _get_redis().get(cache_key)
         if cached:
-            user_id, tier = cached.split(":", 1)
-            return user_id, tier
+            user_id, tier, admin_flag = cached.split(":", 2)
+            return Identity(user_id=user_id, tier=tier, is_admin=admin_flag == "1")
     except Exception:
         pass
 
@@ -59,6 +69,7 @@ async def _resolve_identity_from_auth_service(token: str) -> tuple[str, str]:
         with _ur.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         tier = "pro" if data.get("is_pro") else "free"
+        is_admin = bool(data.get("is_admin", False))
     except _ue.HTTPError as e:
         if e.code == 401:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -77,30 +88,35 @@ async def _resolve_identity_from_auth_service(token: str) -> tuple[str, str]:
         raise HTTPException(status_code=401, detail="Malformed token")
 
     try:
-        await _get_redis().setex(cache_key, 60, f"{user_id}:{tier}")
+        admin_flag = "1" if is_admin else "0"
+        await _get_redis().setex(cache_key, 60, f"{user_id}:{tier}:{admin_flag}")
     except Exception:
         pass
 
-    return user_id, tier
+    return Identity(user_id=user_id, tier=tier, is_admin=is_admin)
 
 
-async def get_user_claims_async(request: Request) -> tuple[str, str]:
+async def get_user_claims_async(request: Request) -> Identity:
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authorization header required")
     return await _resolve_identity_from_auth_service(auth[7:])
 
 
-def get_user_claims(request: Request) -> tuple[str, str]:
+def get_user_claims(request: Request) -> Identity:
     """Sync fallback for SSE path — does not resolve tier from auth service."""
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
-        return "anonymous", "free"
+        return Identity(user_id="anonymous", tier="free", is_admin=False)
     try:
         payload = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return str(payload.get("sub") or "anonymous"), "free"
+        return Identity(
+            user_id=str(payload.get("sub") or "anonymous"),
+            tier="free",
+            is_admin=False,
+        )
     except Exception:
-        return "anonymous", "free"
+        return Identity(user_id="anonymous", tier="free", is_admin=False)
 
 
 def enforce_quota(user_id: str, tier: str, log_view: bool = False) -> EntitlementBlock:

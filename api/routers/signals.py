@@ -20,8 +20,8 @@ async def get_signals_feed(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    user_id, tier = await get_user_claims_async(request)
-    entitlement = enforce_quota(user_id, tier, log_view=True)
+    identity = await get_user_claims_async(request)
+    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=True)
 
     parts = ["SELECT * FROM trading_signals WHERE 1=1"]
     params: list = []
@@ -56,8 +56,8 @@ async def get_signals_feed(
 
 @router.get("/signals-ms/signals/latest", response_model=SignalsResponse)
 async def get_latest_signals(request: Request):
-    user_id, tier = await get_user_claims_async(request)
-    entitlement = enforce_quota(user_id, tier, log_view=True)
+    identity = await get_user_claims_async(request)
+    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=True)
 
     conn = get_db_connection()
     try:

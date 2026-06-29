@@ -1,24 +1,18 @@
 import datetime
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from api.auth import enforce_quota, get_user_claims_async
-from api.config import INTERNAL_API_KEY
 from api.database import get_db_connection
 from api.models import TickerStats, TickersResponse, WatchlistAddPayload
 
 router = APIRouter(tags=["tickers"])
 
 
-def _require_internal_key(x_internal_api_key: str = Header(...)) -> None:
-    if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-
 @router.get("/signals-ms/tickers", response_model=TickersResponse)
 async def get_tracked_tickers(request: Request):
-    user_id, tier = await get_user_claims_async(request)
-    entitlement = enforce_quota(user_id, tier, log_view=False)
+    identity = await get_user_claims_async(request)
+    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=False)
 
     conn = get_db_connection()
     try:
@@ -55,11 +49,10 @@ async def get_tracked_tickers(request: Request):
 
 
 @router.post("/signals-ms/tickers", status_code=201)
-def add_watchlist_ticker(
-    payload: WatchlistAddPayload,
-    x_internal_api_key: str = Header(...),
-):
-    _require_internal_key(x_internal_api_key)
+async def add_watchlist_ticker(payload: WatchlistAddPayload, request: Request):
+    identity = await get_user_claims_async(request)
+    if not identity.is_admin:
+        raise HTTPException(status_code=403, detail="Admin required")
     ticker = payload.ticker.strip().upper()
     asset_type = payload.asset_type.strip().lower()
     if asset_type not in ("stocks", "crypto"):
@@ -81,11 +74,10 @@ def add_watchlist_ticker(
 
 
 @router.delete("/signals-ms/tickers/{ticker}")
-def delete_watchlist_ticker(
-    ticker: str,
-    x_internal_api_key: str = Header(...),
-):
-    _require_internal_key(x_internal_api_key)
+async def delete_watchlist_ticker(ticker: str, request: Request):
+    identity = await get_user_claims_async(request)
+    if not identity.is_admin:
+        raise HTTPException(status_code=403, detail="Admin required")
     ticker = ticker.strip().upper()
     conn = get_db_connection()
     try:

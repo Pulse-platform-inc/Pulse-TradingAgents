@@ -22,8 +22,8 @@ async def sse_stream(
         raise HTTPException(status_code=401, detail="Authorization header required")
     jwt_token = authorization[7:]
 
-    user_id, tier = await _resolve_identity_from_auth_service(jwt_token)
-    entitlement = enforce_quota(user_id, tier, log_view=False)
+    identity = await _resolve_identity_from_auth_service(jwt_token)
+    entitlement = enforce_quota(identity.user_id, identity.tier, log_view=False)
 
     if entitlement.locked:
 
@@ -51,13 +51,17 @@ async def sse_stream(
                     if msg:
                         signal = json.loads(msg["data"])
 
-                        if tier == "free":
-                            current = enforce_quota(user_id, tier, log_view=False)
+                        if identity.tier == "free":
+                            current = enforce_quota(
+                                identity.user_id, identity.tier, log_view=False
+                            )
                             if current.locked:
                                 yield f"event: quota_exhausted\ndata: {json.dumps({'locked': True})}\n\n"
                                 break
                             yield f"event: signal\ndata: {json.dumps(signal)}\n\n"
-                            current = enforce_quota(user_id, tier, log_view=True)
+                            current = enforce_quota(
+                                identity.user_id, identity.tier, log_view=True
+                            )
                             if current.locked:
                                 yield f"event: quota_exhausted\ndata: {json.dumps({'locked': True})}\n\n"
                                 break

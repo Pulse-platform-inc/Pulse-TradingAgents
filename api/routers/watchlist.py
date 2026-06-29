@@ -11,7 +11,8 @@ router = APIRouter(tags=["watchlist"])
 
 @router.get("/signals-ms/watchlist")
 async def get_user_watchlist(request: Request):
-    user_id, _ = await get_user_claims_async(request)
+    identity = await get_user_claims_async(request)
+    user_id = identity.user_id
     conn = get_db_connection()
     try:
         rows = conn.execute(
@@ -25,7 +26,8 @@ async def get_user_watchlist(request: Request):
 
 @router.post("/signals-ms/watchlist", status_code=201)
 async def add_to_user_watchlist(payload: UserWatchlistPayload, request: Request):
-    user_id, _ = await get_user_claims_async(request)
+    identity = await get_user_claims_async(request)
+    user_id = identity.user_id
     ticker = payload.ticker.strip().upper()
     asset_type = payload.asset_type.strip().lower()
     if asset_type not in ("stocks", "crypto"):
@@ -51,7 +53,8 @@ async def add_to_user_watchlist(payload: UserWatchlistPayload, request: Request)
 
 @router.delete("/signals-ms/watchlist/{ticker}")
 async def remove_from_user_watchlist(ticker: str, request: Request):
-    user_id, _ = await get_user_claims_async(request)
+    identity = await get_user_claims_async(request)
+    user_id = identity.user_id
     conn = get_db_connection()
     try:
         cursor = conn.execute(
