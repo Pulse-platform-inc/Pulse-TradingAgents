@@ -126,11 +126,20 @@ class TraderProposal(BaseModel):
     )
     entry_price: Optional[float] = Field(
         default=None,
-        description="Optional entry price target in the instrument's quote currency.",
+        description=(
+            "Entry price in the instrument's quote currency. Provide for all Buy and Sell "
+            "actions — use the current market price for immediate entries or a specific "
+            "limit level for staged entries. Leave null only for Hold."
+        ),
     )
     stop_loss: Optional[float] = Field(
         default=None,
-        description="Optional stop-loss price in the instrument's quote currency.",
+        description=(
+            "Stop-loss price in the instrument's quote currency. Required for Buy and Sell "
+            "actions — place below entry for Buy, above entry for Sell/short. Anchor to a "
+            "key technical level (support, resistance, recent swing high/low). Leave null "
+            "only for Hold."
+        ),
     )
     position_sizing: Optional[str] = Field(
         default=None,
@@ -198,7 +207,11 @@ class PortfolioDecision(BaseModel):
     )
     price_target: Optional[float] = Field(
         default=None,
-        description="Optional target price in the instrument's quote currency.",
+        description=(
+            "Price target in the instrument's quote currency. Required for Buy, Overweight, "
+            "Sell, and Underweight ratings — base it on technical resistance/support or "
+            "fundamental valuation. Leave null only for Hold."
+        ),
     )
     time_horizon: Optional[str] = Field(
         default=None,
