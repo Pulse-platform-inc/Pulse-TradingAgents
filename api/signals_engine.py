@@ -132,7 +132,10 @@ def normalize_signal(
     stop_loss = _extract_price(trader_fields, "stop_loss")
 
     if entry_price is None and live_price is not None:
-        entry_price = round(live_price, 2)
+        # Sub-$1 assets (DOGE etc.) need more precision than 2 decimals
+        entry_price = (
+            round(live_price, 2) if live_price >= 1 else float(f"{live_price:.4g}")
+        )
 
     reasoning_summary = (
         pm_fields.get("executive_summary")

@@ -16,15 +16,17 @@ async def get_stats(request: Request):
     today = datetime.datetime.now().date().isoformat()
     conn = get_db_connection()
     try:
+        # Match the published feed: only buy/sell signals count
         rows = conn.execute(
-            "SELECT signal_type, confidence FROM trading_signals WHERE generated_at >= ?",
+            "SELECT signal_type, confidence FROM trading_signals "
+            "WHERE generated_at >= ? AND signal_type IN ('buy','sell')",
             (today,),
         ).fetchall()
 
         signals_today = len(rows)
-        buy = sum(1 for r in rows if r["signal_type"] in ("buy", "overweight"))
-        sell = sum(1 for r in rows if r["signal_type"] in ("sell", "underweight"))
-        hold = sum(1 for r in rows if r["signal_type"] == "hold")
+        buy = sum(1 for r in rows if r["signal_type"] == "buy")
+        sell = sum(1 for r in rows if r["signal_type"] == "sell")
+        hold = 0
         avg_conf = (
             round(sum(r["confidence"] for r in rows) / signals_today, 2)
             if signals_today

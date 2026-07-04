@@ -35,7 +35,9 @@ async def get_signals_feed(
     identity = await get_user_claims_async(request)
     entitlement = await enforce_quota(identity, log_view=True)
 
-    parts = ["SELECT * FROM trading_signals WHERE 1=1"]
+    # Only buy/sell signals are published; hold/overweight/underweight stay
+    # in the DB for history but are hidden until custom asset search ships.
+    parts = ["SELECT * FROM trading_signals WHERE signal_type IN ('buy','sell')"]
     params: list = []
 
     if ticker:
@@ -73,12 +75,15 @@ async def get_latest_signals(request: Request):
 
     conn = get_db_connection()
     try:
+        # Latest signal per ticker, then hide non-buy/sell: a ticker whose
+        # current stance is hold shows no card rather than a stale signal.
         rows = conn.execute("""
             SELECT s1.* FROM trading_signals s1
             INNER JOIN (
                 SELECT ticker, MAX(generated_at) as max_gen
                 FROM trading_signals GROUP BY ticker
             ) s2 ON s1.ticker = s2.ticker AND s1.generated_at = s2.max_gen
+            WHERE s1.signal_type IN ('buy','sell')
             ORDER BY s1.ticker ASC
         """).fetchall()
         signals = [

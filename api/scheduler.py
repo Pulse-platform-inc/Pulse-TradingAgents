@@ -194,7 +194,9 @@ class SignalScheduler:
         finally:
             conn.close()
 
-        sse_hub.broadcast(signal_dict)
+        # Only buy/sell signals are published to clients (saved above regardless)
+        if signal_dict["signal_type"] in ("buy", "sell"):
+            sse_hub.broadcast(signal_dict)
 
 
 scheduler = SignalScheduler()
