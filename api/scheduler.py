@@ -36,6 +36,24 @@ class RedisSSEHub:
 
 sse_hub = RedisSSEHub(REDIS_URL)
 
+# Errors worth rotating past: per-model quotas / rate limits / billing denials.
+# Anything else (bad ticker, parsing bug) re-raises immediately.
+_ROTATE_MARKERS = (
+    "429",
+    "resource_exhausted",
+    "resource exhausted",
+    "permission_denied",
+    "quota",
+    "rate limit",
+)
+
+_GOOGLE_FALLBACK_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+]
+
 
 class SignalScheduler:
     def __init__(self) -> None:
@@ -45,6 +63,25 @@ class SignalScheduler:
             os.getenv("TRADING_SIGNALS_CHECK_INTERVAL_SECONDS", "60")
         )
         self.run_cadence_hours = int(os.getenv("TRADING_SIGNALS_CADENCE_HOURS", "24"))
+        # Index into the model rotation; sticks to the last working model
+        # within a cycle so one exhausted model isn't retried 12 times.
+        self._model_offset = 0
+
+    def _model_rotation(self) -> list[Optional[str]]:
+        """Models to try in order. None means 'use the configured defaults'.
+
+        Override with TRADING_SIGNALS_MODEL_ROTATION (comma-separated model
+        names). Defaults to the flash-family fallback chain for Google;
+        other providers get no rotation unless the env var is set.
+        """
+        raw = os.getenv("TRADING_SIGNALS_MODEL_ROTATION", "")
+        models = [m.strip() for m in raw.split(",") if m.strip()]
+        if models:
+            return models
+        if str(DEFAULT_CONFIG.get("llm_provider", "")).lower() == "google":
+            primary = DEFAULT_CONFIG.get("deep_think_llm")
+            return [primary] + [m for m in _GOOGLE_FALLBACK_MODELS if m != primary]
+        return [None]
 
     def start(self) -> None:
         self._running = True
@@ -71,6 +108,8 @@ class SignalScheduler:
                 time.sleep(1)
 
     def run_scheduler_cycle(self, force_ticker: Optional[str] = None) -> None:
+        # Prefer the primary model again each cycle; quotas may have reset.
+        self._model_offset = 0
         conn = get_db_connection()
         tickers = []
         try:
@@ -128,10 +167,34 @@ class SignalScheduler:
     def execute_agent_run(
         self, ticker: str, asset_type: str, latest_sig: Optional[sqlite3.Row] = None
     ) -> None:
-        config = {**DEFAULT_CONFIG, "output_language": "English"}
-        graph = TradingAgentsGraph(config=config, debug=False)
+        models = self._model_rotation()
         trade_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        final_state, _ = graph.propagate(ticker, trade_date, asset_type=asset_type)
+        final_state = None
+        for attempt in range(len(models)):
+            idx = (self._model_offset + attempt) % len(models)
+            model = models[idx]
+            config = {**DEFAULT_CONFIG, "output_language": "English"}
+            if model:
+                config["deep_think_llm"] = model
+                config["quick_think_llm"] = model
+            try:
+                graph = TradingAgentsGraph(config=config, debug=False)
+                final_state, _ = graph.propagate(
+                    ticker, trade_date, asset_type=asset_type
+                )
+                self._model_offset = idx
+                break
+            except Exception as e:
+                msg = str(e).lower()
+                retryable = any(marker in msg for marker in _ROTATE_MARKERS)
+                if not retryable or attempt == len(models) - 1:
+                    raise
+                logger.warning(
+                    "Model %s unavailable for %s (%s); rotating to next model",
+                    model or "default",
+                    ticker,
+                    str(e)[:200],
+                )
 
         signal_dict = normalize_signal(ticker, asset_type, final_state)
 
