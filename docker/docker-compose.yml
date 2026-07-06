@@ -72,7 +72,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    command: redis-server --appendonly yes --bind 127.0.0.1 --protected-mode yes
+    # Bind to all interfaces so the app container can reach redis over the
+    # private pulse-network. No host ports are published, so redis stays
+    # unreachable from outside the docker network.
+    command: redis-server --appendonly yes --bind 0.0.0.0 --protected-mode no
 
 volumes:
   trading-signals-data:

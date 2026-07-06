@@ -1,5 +1,3 @@
-import datetime
-
 from fastapi import APIRouter, Request
 
 from api.auth import get_user_claims_async
@@ -13,14 +11,20 @@ router = APIRouter(tags=["stats"])
 async def get_stats(request: Request):
     await get_user_claims_async(request)  # auth required, no quota cost
 
-    today = datetime.datetime.now().date().isoformat()
     conn = get_db_connection()
     try:
-        # Match the published feed: only buy/sell signals count
+        # Mirror the feed: summarize the latest signal per ticker (buy/sell only).
+        # A calendar-day filter read 0 between midnight and the nightly
+        # regeneration even while those same signals were still on the feed.
         rows = conn.execute(
-            "SELECT signal_type, confidence FROM trading_signals "
-            "WHERE generated_at >= ? AND signal_type IN ('buy','sell')",
-            (today,),
+            """
+            SELECT s1.signal_type, s1.confidence FROM trading_signals s1
+            INNER JOIN (
+                SELECT ticker, MAX(generated_at) as max_gen
+                FROM trading_signals GROUP BY ticker
+            ) s2 ON s1.ticker = s2.ticker AND s1.generated_at = s2.max_gen
+            WHERE s1.signal_type IN ('buy','sell')
+            """
         ).fetchall()
 
         signals_today = len(rows)
