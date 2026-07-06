@@ -12,13 +12,19 @@ import redis.asyncio as aioredis
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
-from api.config import REDIS_URL
+from api.config import REDIS_PASSWORD, REDIS_URL
 from api.database import get_db_connection
 from api.signals_engine import normalize_signal
 
 logger = logging.getLogger("pulse-trading-signals-service")
 
-redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+# Password passed as a kwarg only when set, so unauthenticated local dev and
+# password-in-URL setups both keep working unchanged.
+_REDIS_KWARGS: dict = {"decode_responses": True}
+if REDIS_PASSWORD:
+    _REDIS_KWARGS["password"] = REDIS_PASSWORD
+
+redis_client = aioredis.from_url(REDIS_URL, **_REDIS_KWARGS)
 
 
 class RedisSSEHub:
@@ -27,7 +33,7 @@ class RedisSSEHub:
 
     def broadcast(self, signal: dict) -> None:
         try:
-            r = redis.from_url(self._redis_url, decode_responses=True)
+            r = redis.from_url(self._redis_url, **_REDIS_KWARGS)
             r.publish("pulse:trading_signals", json.dumps(signal, default=str))
             logger.info("Signal broadcast to Redis channel 'pulse:trading_signals'")
         except Exception as e:

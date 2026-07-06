@@ -55,6 +55,10 @@ services:
       pulse-network:
         aliases:
           - pulse-trading-signals-redis
+    # Lets redis-cli in the healthcheck authenticate without exposing the
+    # password on the command line. Interpolated from .env at deploy time.
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -72,10 +76,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # Bind to all interfaces so the app container can reach redis over the
-    # private pulse-network. No host ports are published, so redis stays
-    # unreachable from outside the docker network.
-    command: redis-server --appendonly yes --bind 0.0.0.0 --protected-mode no
+    # Requires a password (from .env) and binds all interfaces so the app
+    # container can reach it over the private pulse-network. No host ports are
+    # published, so redis stays unreachable from outside the docker network.
+    # List form keeps the password a single argv even if it contains spaces.
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--bind",
+        "0.0.0.0",
+        "--requirepass",
+        "${REDIS_PASSWORD}",
+      ]
 
 volumes:
   trading-signals-data:

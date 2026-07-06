@@ -8,6 +8,9 @@ DB_PATH = os.getenv(
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+# Passed as a client kwarg (not embedded in REDIS_URL) so passwords with
+# URL-special characters don't need percent-encoding. Empty = no auth.
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
 _raw_origins = os.getenv(
     "PULSE_CORS_ORIGINS", "https://pulsenow.io,https://staging.pulsenow.io"
