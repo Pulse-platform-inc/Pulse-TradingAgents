@@ -268,8 +268,12 @@ class SignalScheduler:
 
         signal_dict = normalize_signal(ticker, asset_type, final_state)
 
-        if latest_sig and (
-            latest_sig["signal_type"] == signal_dict["signal_type"]
+        # Never dedupe against an expired signal: skipping would leave the
+        # expired row as latest and re-trigger regeneration every cycle.
+        if (
+            latest_sig
+            and (latest_sig["status"] or "active") != "expired"
+            and latest_sig["signal_type"] == signal_dict["signal_type"]
             and latest_sig["reasoning_summary"] == signal_dict["reasoning_summary"]
         ):
             logger.info("Skipping duplicate signal for %s (thesis unchanged).", ticker)
