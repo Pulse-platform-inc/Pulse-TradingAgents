@@ -29,7 +29,9 @@ from tradingagents.dataflows.config import set_config
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
+    get_live_quote,
     resolve_instrument_identity,
+    yf_symbol,
     get_stock_data,
     get_indicators,
     get_fundamentals,
@@ -310,8 +312,9 @@ class TradingAgentsGraph:
         path and the CLI call this so the resolved identity reaches the whole
         graph regardless of entry point.
         """
-        identity = resolve_instrument_identity(ticker)
-        return build_instrument_context(ticker, asset_type, identity)
+        identity = resolve_instrument_identity(yf_symbol(ticker, asset_type))
+        live_price = get_live_quote(ticker, asset_type)
+        return build_instrument_context(ticker, asset_type, identity, live_price)
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
         """Run the trading agents graph for a company on a specific date.

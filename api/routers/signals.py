@@ -35,25 +35,37 @@ async def get_signals_feed(
     identity = await get_user_claims_async(request)
     entitlement = await enforce_quota(identity, log_view=True)
 
-    # Only buy/sell signals are published; hold/overweight/underweight stay
-    # in the DB for history but are hidden until custom asset search ships.
-    parts = ["SELECT * FROM trading_signals WHERE signal_type IN ('buy','sell')"]
+    # Only each ticker's CURRENT buy/sell signal is served. Historical rows
+    # stay in the DB but must never reach clients: a superseded signal
+    # (e.g. a hallucinated pre-split NVDA sell at $920) would otherwise
+    # resurface whenever the ticker's newest stance is hold/over/underweight.
+    parts = [
+        """
+        SELECT s1.* FROM trading_signals s1
+        INNER JOIN (
+            SELECT ticker, MAX(generated_at) as max_gen
+            FROM trading_signals GROUP BY ticker
+        ) s2 ON s1.ticker = s2.ticker AND s1.generated_at = s2.max_gen
+        WHERE s1.signal_type IN ('buy','sell')
+          AND COALESCE(s1.status, 'active') != 'expired'
+        """
+    ]
     params: list = []
 
     if ticker:
-        parts.append("AND ticker = ?")
+        parts.append("AND s1.ticker = ?")
         params.append(ticker.upper())
     if signal_type:
-        parts.append("AND signal_type = ?")
+        parts.append("AND s1.signal_type = ?")
         params.append(signal_type.lower())
     if start_date:
-        parts.append("AND generated_at >= ?")
+        parts.append("AND s1.generated_at >= ?")
         params.append(start_date)
     if end_date:
-        parts.append("AND generated_at <= ?")
+        parts.append("AND s1.generated_at <= ?")
         params.append(end_date)
 
-    parts.append("ORDER BY generated_at DESC LIMIT ? OFFSET ?")
+    parts.append("ORDER BY s1.generated_at DESC LIMIT ? OFFSET ?")
     params.extend([limit, offset])
 
     conn = get_db_connection()
@@ -84,6 +96,7 @@ async def get_latest_signals(request: Request):
                 FROM trading_signals GROUP BY ticker
             ) s2 ON s1.ticker = s2.ticker AND s1.generated_at = s2.max_gen
             WHERE s1.signal_type IN ('buy','sell')
+              AND COALESCE(s1.status, 'active') != 'expired'
             ORDER BY s1.ticker ASC
         """).fetchall()
         signals = [

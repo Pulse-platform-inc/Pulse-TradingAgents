@@ -27,6 +27,7 @@ class SignalPayload(BaseModel):
     reasoning_summary: str
     generated_at: datetime.datetime
     source_run_id: Optional[str] = None
+    status: str = "active"
     grade: Optional[str] = None
     rr: Optional[float] = None
     agent_votes: Optional[Dict[str, Any]] = None

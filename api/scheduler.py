@@ -13,7 +13,7 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
 from api.config import REDIS_PASSWORD, REDIS_URL
-from api.database import get_db_connection
+from api.database import get_db_connection, get_live_price
 from api.signals_engine import normalize_signal
 
 logger = logging.getLogger("pulse-trading-signals-service")
@@ -72,6 +72,10 @@ class SignalScheduler:
         # Index into the model rotation; sticks to the last working model
         # within a cycle so one exhausted model isn't retried 12 times.
         self._model_offset = 0
+        self.tracker_interval_seconds = int(
+            os.getenv("TRADING_SIGNALS_TRACKER_INTERVAL_SECONDS", "900")
+        )
+        self._last_tracker_run = 0.0
 
     def _model_rotation(self) -> list[Optional[str]]:
         """Models to try in order. None means 'use the configured defaults'.
@@ -108,6 +112,12 @@ class SignalScheduler:
                 self.run_scheduler_cycle()
             except Exception as e:
                 logger.error("Scheduler cycle error: %s", e)
+            if time.time() - self._last_tracker_run >= self.tracker_interval_seconds:
+                self._last_tracker_run = time.time()
+                try:
+                    self.update_signal_statuses()
+                except Exception as e:
+                    logger.error("Signal tracker error: %s", e)
             for _ in range(self.check_interval_seconds):
                 if not self._running:
                     break
@@ -143,7 +153,8 @@ class SignalScheduler:
             latest_sig = None
             try:
                 latest_sig = conn.execute(
-                    "SELECT generated_at, signal_type, reasoning_summary FROM trading_signals "
+                    "SELECT generated_at, signal_type, reasoning_summary, status "
+                    "FROM trading_signals "
                     "WHERE ticker = ? ORDER BY generated_at DESC LIMIT 1",
                     (ticker,),
                 ).fetchone()
@@ -156,8 +167,14 @@ class SignalScheduler:
                     last_run = datetime.datetime.strptime(
                         latest_sig["generated_at"], fmt
                     )
-                    if (datetime.datetime.now() - last_run) < datetime.timedelta(
-                        hours=self.run_cadence_hours
+                    within_cadence = (
+                        datetime.datetime.now() - last_run
+                    ) < datetime.timedelta(hours=self.run_cadence_hours)
+                    # An expired signal regenerates immediately: the price
+                    # already hit its stop or target, so the thesis is stale.
+                    if (
+                        within_cadence
+                        and (latest_sig["status"] or "active") != "expired"
                     ):
                         run_needed = False
             finally:
@@ -169,6 +186,53 @@ class SignalScheduler:
                     self.execute_agent_run(ticker, asset_type, latest_sig)
                 except Exception as e:
                     logger.error("Agent run failed for %s: %s", ticker, e)
+
+    def update_signal_statuses(self) -> None:
+        """Tracker: expire each ticker's current buy/sell signal once the live
+        price exits the stop-loss ↔ price-target band (stopped out or target
+        hit). Expired signals leave the feed and regenerate on the next cycle.
+        """
+        conn = get_db_connection()
+        try:
+            rows = conn.execute(
+                """
+                SELECT s1.id, s1.ticker, s1.asset_type, s1.signal_type,
+                       s1.entry_price, s1.price_target, s1.stop_loss
+                FROM trading_signals s1
+                INNER JOIN (
+                    SELECT ticker, MAX(generated_at) as max_gen
+                    FROM trading_signals GROUP BY ticker
+                ) s2 ON s1.ticker = s2.ticker AND s1.generated_at = s2.max_gen
+                WHERE s1.signal_type IN ('buy','sell')
+                  AND COALESCE(s1.status, 'active') = 'active'
+                """
+            ).fetchall()
+            for r in rows:
+                target, stop = r["price_target"], r["stop_loss"]
+                if target is None or stop is None:
+                    continue
+                live = get_live_price(r["ticker"], r["asset_type"])
+                if not live:
+                    continue
+                if r["signal_type"] == "buy":
+                    expired = live <= stop or live >= target
+                else:  # sell
+                    expired = live >= stop or live <= target
+                if expired:
+                    conn.execute(
+                        "UPDATE trading_signals SET status = 'expired' WHERE id = ?",
+                        (r["id"],),
+                    )
+                    logger.info(
+                        "Signal expired for %s: live %.6g outside stop %.6g / target %.6g",
+                        r["ticker"],
+                        live,
+                        stop,
+                        target,
+                    )
+            conn.commit()
+        finally:
+            conn.close()
 
     def execute_agent_run(
         self, ticker: str, asset_type: str, latest_sig: Optional[sqlite3.Row] = None
@@ -221,8 +285,8 @@ class SignalScheduler:
                     reasoning_summary, generated_at, source_run_id,
                     name, grade, rr, agent_votes, sentiment_score, sentiment_band,
                     market_report, news_report, fundamentals_report, sentiment_report,
-                    pm_report, trader_report, investment_debate, risk_debate
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    pm_report, trader_report, investment_debate, risk_debate, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
                 """,
                 (
                     signal_dict["id"],

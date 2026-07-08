@@ -131,11 +131,36 @@ def normalize_signal(
     entry_price = _extract_price(trader_fields, "entry_price")
     stop_loss = _extract_price(trader_fields, "stop_loss")
 
-    if entry_price is None and live_price is not None:
+    def _fmt(p: float) -> float:
         # Sub-$1 assets (DOGE etc.) need more precision than 2 decimals
-        entry_price = (
-            round(live_price, 2) if live_price >= 1 else float(f"{live_price:.4g}")
-        )
+        return round(p, 2) if p >= 1 else float(f"{p:.4g}")
+
+    # Entry is anchored to the live quote: LLM-stated entries drift to
+    # training-data price levels (pre-split NVDA at $920). Keep the LLM's
+    # entry only when it is within 5% of the live market price.
+    if live_price:
+        if entry_price is None or abs(entry_price / live_price - 1) > 0.05:
+            entry_price = _fmt(live_price)
+
+    # Directional sanity + fallbacks so buy/sell signals always carry a
+    # stop loss, price target and R/R. ponytail: fixed 5%/10% default
+    # distances; upgrade to ATR-based levels if volatility-aware stops matter.
+    if rating in ("buy", "overweight", "sell", "underweight") and entry_price:
+        bullish = rating in ("buy", "overweight")
+        if stop_loss is not None and not (
+            (stop_loss < entry_price if bullish else stop_loss > entry_price)
+            and abs(stop_loss / entry_price - 1) <= 0.25
+        ):
+            stop_loss = None
+        if price_target is not None and not (
+            (price_target > entry_price if bullish else price_target < entry_price)
+            and abs(price_target / entry_price - 1) <= 1.0
+        ):
+            price_target = None
+        if stop_loss is None:
+            stop_loss = _fmt(entry_price * (0.95 if bullish else 1.05))
+        if price_target is None:
+            price_target = _fmt(entry_price * (1.10 if bullish else 0.90))
 
     reasoning_summary = (
         pm_fields.get("executive_summary")
@@ -242,6 +267,7 @@ def mask_signal(signal: SignalPayload) -> SignalPayload:
         reasoning_summary="Upgrade to Pro to view this trading signal.",
         generated_at=signal.generated_at,
         source_run_id=None,
+        status=signal.status,
         grade=None,
         rr=None,
         agent_votes=None,

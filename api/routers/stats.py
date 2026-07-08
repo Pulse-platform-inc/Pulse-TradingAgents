@@ -24,6 +24,7 @@ async def get_stats(request: Request):
                 FROM trading_signals GROUP BY ticker
             ) s2 ON s1.ticker = s2.ticker AND s1.generated_at = s2.max_gen
             WHERE s1.signal_type IN ('buy','sell')
+              AND COALESCE(s1.status, 'active') != 'expired'
             """
         ).fetchall()
 

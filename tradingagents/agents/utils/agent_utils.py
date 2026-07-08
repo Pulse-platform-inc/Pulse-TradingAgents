@@ -46,6 +46,32 @@ def get_language_instruction() -> str:
     return f" Write your entire response in {lang}."
 
 
+# Yahoo Finance symbol collisions: the obvious symbol maps to the wrong asset.
+# ARB-USD on Yahoo is a $0.0007 token, not Arbitrum (which is ARB11841-USD).
+YF_SYMBOL_OVERRIDES: dict[str, str] = {
+    "ARB": "ARB11841-USD",
+}
+
+
+def yf_symbol(ticker: str, asset_type: str = "stock") -> str:
+    """Map a watchlist ticker to its correct Yahoo Finance symbol."""
+    base = ticker.upper().replace("-USD", "")
+    if base in YF_SYMBOL_OVERRIDES:
+        return YF_SYMBOL_OVERRIDES[base]
+    if asset_type == "crypto" and not ticker.upper().endswith("-USD"):
+        return f"{ticker.upper()}-USD"
+    return ticker.upper()
+
+
+def get_live_quote(ticker: str, asset_type: str = "stock") -> Optional[float]:
+    """Real-time last price from Yahoo Finance; fail-open None."""
+    try:
+        return float(yf.Ticker(yf_symbol(ticker, asset_type)).fast_info.last_price)
+    except Exception as exc:  # noqa: BLE001 — never block a run on a quote
+        logger.warning("Could not fetch live quote for %s: %s", ticker, exc)
+        return None
+
+
 def _clean_identity_value(value: Any) -> Optional[str]:
     """Return a trimmed string, or None for empty / placeholder-ish values."""
     if not isinstance(value, str):
@@ -99,6 +125,7 @@ def build_instrument_context(
     ticker: str,
     asset_type: str = "stock",
     identity: Optional[Mapping[str, str]] = None,
+    live_price: Optional[float] = None,
 ) -> str:
     """Describe the exact instrument so agents preserve identity and ticker.
 
@@ -135,6 +162,16 @@ def build_instrument_context(
             f" Resolved identity: {'; '.join(details)}. "
             "Do not substitute a different company or ticker unless a tool "
             "result explicitly disproves this resolved identity."
+        )
+
+    if live_price is not None:
+        # LLMs otherwise quote prices remembered from training data (e.g.
+        # pre-split NVDA at $920) — anchor every price to the real quote.
+        context += (
+            f" CURRENT LIVE MARKET PRICE: ${live_price:.6g} (real-time quote "
+            "fetched at analysis start). Every price you state — entry price, "
+            "stop loss, price target — MUST be anchored to this live price. "
+            "Never use price levels remembered from past knowledge."
         )
 
     if is_crypto:

@@ -6,6 +6,8 @@ from typing import Optional
 
 import yfinance as yf
 
+from tradingagents.agents.utils.agent_utils import yf_symbol
+
 from api.config import DB_PATH, GLOBAL_TICKERS, TICKER_NAMES
 from api.models import SignalPayload
 
@@ -85,6 +87,8 @@ def init_db() -> None:
             ("trader_report", "TEXT"),
             ("investment_debate", "TEXT"),
             ("risk_debate", "TEXT"),
+            # Tracker: 'active' until live price hits stop or target, then 'expired'
+            ("status", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE trading_signals ADD COLUMN {col} {col_type}")
@@ -143,6 +147,7 @@ def _row_to_signal(row) -> SignalPayload:
         reasoning_summary=row["reasoning_summary"],
         generated_at=datetime.datetime.strptime(gen_at_str, fmt),
         source_run_id=row["source_run_id"],
+        status=row["status"] or "active",
         grade=row["grade"],
         rr=row["rr"],
         agent_votes=agent_votes,
@@ -164,15 +169,9 @@ def _row_to_signal(row) -> SignalPayload:
 # ---------------------------------------------------------------------------
 
 
-def _yf_symbol(ticker: str, asset_type: str) -> str:
-    if asset_type == "crypto" and not ticker.endswith("-USD"):
-        return f"{ticker}-USD"
-    return ticker
-
-
 def get_live_price(ticker: str, asset_type: str) -> Optional[float]:
     try:
-        return float(yf.Ticker(_yf_symbol(ticker, asset_type)).fast_info.last_price)
+        return float(yf.Ticker(yf_symbol(ticker, asset_type)).fast_info.last_price)
     except Exception:
         return None
 
