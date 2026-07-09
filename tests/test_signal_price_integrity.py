@@ -69,6 +69,45 @@ def test_sub_dollar_precision_preserved():
     assert sig["entry_price"] == 0.07233  # 4 significant digits, not 0.07
 
 
+def test_confidence_reflects_agent_contradiction():
+    # The July 9 review case: technical strongly bullish while the PM says
+    # sell. Confidence must be low, not a hardwired 0.95.
+    bullish_market = "bullish upside outperform " * 8  # -> technical ~90 buy
+    with patch("api.signals_engine.get_live_price", return_value=0.0766):
+        from api.signals_engine import normalize_signal
+
+        sig = normalize_signal(
+            "ARB",
+            "crypto",
+            {
+                "final_trade_decision": "**Rating**: Sell",
+                "trader_investment_plan": "**Action**: Sell",
+                "market_report": bullish_market,
+            },
+        )
+    assert sig["confidence"] < 0.6  # contradicted signal can't look certain
+
+
+def test_confidence_high_when_agents_agree():
+    bearish = "bearish downside underperform " * 8
+    with patch("api.signals_engine.get_live_price", return_value=100.0):
+        from api.signals_engine import normalize_signal
+
+        sig = normalize_signal(
+            "NVDA",
+            "stocks",
+            {
+                "final_trade_decision": "**Rating**: Sell",
+                "trader_investment_plan": "**Action**: Sell",
+                "market_report": bearish,
+                "fundamentals_report": bearish,
+                "risk_debate_state": {"judge_decision": bearish},
+            },
+        )
+    assert sig["confidence"] >= 0.75
+    assert sig["confidence"] <= 0.95
+
+
 def test_arb_maps_to_arbitrum_not_scam_token():
     assert yf_symbol("ARB", "crypto") == "ARB11841-USD"
     assert yf_symbol("BTC", "crypto") == "BTC-USD"

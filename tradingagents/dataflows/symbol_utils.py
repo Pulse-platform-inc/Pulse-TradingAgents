@@ -67,6 +67,9 @@ _CRYPTO_BASES = frozenset(
 # index CFD names resolve to the underlying Yahoo index symbol. Extend by
 # adding rows — no call site changes required.
 _ALIASES = {
+    # Crypto symbol collisions: Yahoo's ARB-USD is a $0.0007 token, not
+    # Arbitrum — analysts were charting the wrong asset entirely.
+    "ARB": "ARB11841-USD", "ARBUSD": "ARB11841-USD", "ARB-USD": "ARB11841-USD",
     # Precious metals (spot names -> COMEX/NYMEX futures)
     "XAUUSD": "GC=F", "XAU": "GC=F", "GOLD": "GC=F",
     "XAGUSD": "SI=F", "XAG": "SI=F", "SILVER": "SI=F",
